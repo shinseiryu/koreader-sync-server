@@ -94,6 +94,8 @@ svg text { fill: var(--muted); font-size: 11px; }
       <option value="90">90 days</option>
       <option value="365">1 year</option>
     </select>
+    <button id="importTitles" type="button" title="Load a labels.json made by scripts/calibre_ids.py">Import titles</button>
+    <input id="importFile" type="file" accept="application/json,.json" hidden>
     <button id="logout" type="button">Sign out</button>
   </header>
 
@@ -418,6 +420,30 @@ document.querySelectorAll("[data-metric]").forEach(b => b.addEventListener("clic
   document.querySelectorAll("[data-metric]").forEach(o => o.setAttribute("aria-pressed", String(o === b)));
   renderActivity();
 }));
+$("importTitles").addEventListener("click", () => $("importFile").click());
+$("importFile").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  try {
+    const incoming = JSON.parse(await file.text());
+    if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) throw new Error("not an object");
+    const merged = { ...labels() };
+    let used = 0;
+    const known = new Set(state.docs.map(d => d.document));
+    for (const id in incoming) {
+      if (typeof incoming[id] !== "string") continue;
+      merged[id] = incoming[id];
+      if (known.has(id)) used++;
+    }
+    localStorage.setItem("labels", JSON.stringify(merged));
+    renderBooks();
+    if (state.open) $("detailTitle").textContent = nameOf(state.open);
+    alert(`Imported ${Object.keys(incoming).length} titles; ${used} match books on this server.`);
+  } catch (err) {
+    alert("Could not import: " + err.message);
+  }
+});
 $("closeDetail").addEventListener("click", () => { state.open = null; $("detail").hidden = true; });
 $("rename").addEventListener("click", () => {
   const cur = labels()[state.open] || "";

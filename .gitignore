@@ -29,3 +29,5 @@ tmtags
 # Docker volumes
 data
 
+
+labels.json

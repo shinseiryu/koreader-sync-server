@@ -107,6 +107,18 @@ static file with no external dependencies. Book names are not synced, so books
 show their document id; use Rename to give one a label, which is stored in your
 browser only.
 
+To label a whole library at once, `scripts/calibre_ids.py` computes the same
+document ids KOReader does for every book on a Calibre content server and
+writes a `labels.json` that the page's "Import titles" button loads:
+
+```bash
+CALIBRE_PASS=... python3 scripts/calibre_ids.py https://calibre.example.com myuser
+```
+
+It only reads, and uses HTTP range requests so it fetches about a dozen small
+samples per book. An id only matches when the file on the device is
+byte-identical to the one Calibre serves.
+
 Deleting an account
 ===================
 
