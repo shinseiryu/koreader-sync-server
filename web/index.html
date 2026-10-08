@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reading Sync</title>
+<style>
+:root {
+  --bg: #f6f5f1; --surface: #ffffff; --text: #1d1d1b; --muted: #6b6a66;
+  --line: #e2e0d9; --accent: #2f6f5e; --accent-soft: #cfe3dc; --danger: #b3261e;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161715; --surface: #1f2120; --text: #ecebe6; --muted: #9a9890;
+    --line: #34362f; --accent: #6fbfa8; --accent-soft: #2a4a41; --danger: #f2b8b5;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161715; --surface: #1f2120; --text: #ecebe6; --muted: #9a9890;
+  --line: #34362f; --accent: #6fbfa8; --accent-soft: #2a4a41; --danger: #f2b8b5;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 960px; margin: 0 auto; padding: 16px; }
+header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+header h1 { font-size: 20px; margin: 0; flex: 1; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+h2 { font-size: 15px; margin: 0 0 12px; }
+.muted { color: var(--muted); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; }
+.tile .n { font-size: 26px; font-weight: 650; }
+.tile .l { color: var(--muted); font-size: 13px; }
+button, select, input {
+  font: inherit; color: var(--text); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+}
+button { cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:focus-visible, select:focus-visible, input:focus-visible, tr[tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.login { max-width: 360px; margin: 12vh auto 0; }
+.login label { display: block; margin: 10px 0 4px; }
+.login input[type=text], .login input[type=password] { width: 100%; }
+.login .check { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: var(--muted); }
+.error { color: var(--danger); margin-top: 10px; min-height: 1.4em; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { color: var(--muted); font-weight: 500; font-size: 13px; }
+tbody tr[tabindex] { cursor: pointer; }
+tbody tr[tabindex]:hover { background: var(--bg); }
+.bar { height: 8px; background: var(--accent-soft); border-radius: 4px; min-width: 80px; overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--accent); }
+.id { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+svg { display: block; width: 100%; height: auto; }
+svg text { fill: var(--muted); font-size: 11px; }
+.seg { display: inline-flex; gap: 4px; }
+.seg button[aria-pressed=true] { background: var(--accent-soft); border-color: var(--accent); }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row .grow { flex: 1; }
+.scroll { overflow-x: auto; }
+@media (max-width: 560px) { .hide-sm { display: none; } }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+
+<section id="login" class="card login" hidden>
+  <h1 style="font-size:20px;margin-top:0">Reading Sync</h1>
+  <form id="loginForm">
+    <label for="user">Username</label>
+    <input id="user" type="text" autocomplete="username" required>
+    <label for="pass">Password</label>
+    <input id="pass" type="password" autocomplete="current-password" required>
+    <label class="check"><input id="prehashed" type="checkbox"> Already the MD5 key KOReader stores</label>
+    <p class="muted" style="font-size:13px">KOReader sends an MD5 of your password as the key. This page does the same, in your browser, and sends only that key.</p>
+    <button class="primary" type="submit">Sign in</button>
+    <div id="loginError" class="error" role="alert"></div>
+  </form>
+</section>
+
+<section id="app" hidden>
+  <header>
+    <h1>Reading Sync</h1>
+    <span class="muted" id="who"></span>
+    <label class="muted" for="range">Range</label>
+    <select id="range">
+      <option value="30">30 days</option>
+      <option value="90">90 days</option>
+      <option value="365">1 year</option>
+    </select>
+    <button id="logout" type="button">Sign out</button>
+  </header>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="card">
+    <div class="row">
+      <h2 class="grow">Activity</h2>
+      <div class="seg" role="group" aria-label="Metric">
+        <button type="button" data-metric="advanced" aria-pressed="true">Progress</button>
+        <button type="button" data-metric="syncs" aria-pressed="false">Syncs</button>
+      </div>
+    </div>
+    <div id="activity"></div>
+  </div>
+
+  <div class="card">
+    <h2>Books</h2>
+    <div class="scroll"><table id="books">
+      <thead><tr><th>Book</th><th>Progress</th><th class="hide-sm">Device</th><th>Last sync</th><th class="hide-sm">In range</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <p id="booksEmpty" class="muted" hidden>No synced books yet. Sync from KOReader and refresh.</p>
+  </div>
+
+  <div class="card" id="detail" hidden>
+    <div class="row">
+      <h2 class="grow" id="detailTitle"></h2>
+      <button type="button" id="rename">Rename</button>
+      <button type="button" id="closeDetail">Close</button>
+    </div>
+    <div id="timeline"></div>
+    <div class="scroll"><table id="entries">
+      <thead><tr><th>Time</th><th>Position</th><th>Position in book</th><th>Device</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+
+// ---- md5 (KOReader's sync key is the md5 hex of the password) -------------
+function md5(str) {
+  const bytes = new TextEncoder().encode(str);
+  const S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
+  const K = new Uint32Array(64);
+  for (let i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296) >>> 0;
+  const len = bytes.length, n = (((len + 8) >>> 6) + 1) * 64;
+  const buf = new Uint8Array(n);
+  buf.set(bytes); buf[len] = 0x80;
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(n - 8, (len * 8) >>> 0, true);
+  dv.setUint32(n - 4, Math.floor(len / 0x20000000), true);
+  let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+  for (let off = 0; off < n; off += 64) {
+    let A = a0, B = b0, C = c0, D = d0;
+    for (let i = 0; i < 64; i++) {
+      let F, g;
+      if (i < 16) { F = (B & C) | (~B & D); g = i; }
+      else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) % 16; }
+      else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) % 16; }
+      else { F = C ^ (B | ~D); g = (7 * i) % 16; }
+      F = (F + A + K[i] + dv.getUint32(off + g * 4, true)) >>> 0;
+      A = D; D = C; C = B;
+      const s = S[(i >> 4) * 4 + (i % 4)];
+      B = (B + ((F << s) | (F >>> (32 - s)))) >>> 0;
+    }
+    a0 = (a0 + A) >>> 0; b0 = (b0 + B) >>> 0; c0 = (c0 + C) >>> 0; d0 = (d0 + D) >>> 0;
+  }
+  const out = new DataView(new ArrayBuffer(16));
+  [a0, b0, c0, d0].forEach((v, i) => out.setUint32(i * 4, v, true));
+  return Array.from(new Uint8Array(out.buffer), b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// ---- state & helpers -------------------------------------------------------
+const $ = id => document.getElementById(id);
+const state = { user: null, key: null, days: 30, metric: "advanced", docs: [], stats: null, open: null };
+const DAY = 86400;
+
+function store(k, v) { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch (e) {} }
+function load(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+function labels() { try { return JSON.parse(localStorage.getItem("labels") || "{}"); } catch (e) { return {}; } }
+function setLabel(id, name) {
+  const l = labels();
+  if (name) l[id] = name; else delete l[id];
+  try { localStorage.setItem("labels", JSON.stringify(l)); } catch (e) {}
+}
+const nameOf = id => labels()[id] || id;
+
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const k in (attrs || {})) {
+    if (k === "text") e.textContent = attrs[k]; else e.setAttribute(k, attrs[k]);
+  }
+  kids.forEach(c => e.append(c));
+  return e;
+}
+const svgNS = "http://www.w3.org/2000/svg";
+function svg(tag, attrs, text) {
+  const e = document.createElementNS(svgNS, tag);
+  for (const k in (attrs || {})) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+const pct = v => v == null ? "–" : (v * 100).toFixed(1) + "%";
+const fmtTime = t => t ? new Date(t * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "–";
+function ago(t) {
+  if (!t) return "–";
+  const s = Math.max(0, Date.now() / 1000 - t);
+  if (s < 90) return "just now";
+  if (s < 5400) return Math.round(s / 60) + " min ago";
+  if (s < 129600) return Math.round(s / 3600) + " h ago";
+  return Math.round(s / DAY) + " d ago";
+}
+
+class AuthError extends Error {}
+async function api(path, params) {
+  const q = params ? "?" + new URLSearchParams(params) : "";
+  const res = await fetch(path + q, {
+    headers: {
+      "Accept": "application/vnd.koreader.v1+json",
+      "x-auth-user": state.user, "x-auth-key": state.key,
+    },
+  });
+  if (res.status === 401) throw new AuthError("Unauthorized");
+  if (!res.ok) throw new Error("Request failed (" + res.status + ")");
+  return res.json();
+}
+
+// ---- views -----------------------------------------------------------------
+function showLogin() {
+  $("app").hidden = true; $("login").hidden = false;
+  $("user").focus();
+}
+
+function tile(n, l) {
+  return el("div", { class: "tile" }, el("div", { class: "n", text: String(n) }), el("div", { class: "l", text: l }));
+}
+
+function renderTiles() {
+  const s = state.stats, t = $("tiles");
+  t.replaceChildren(
+    tile(state.docs.length, "Books synced"),
+    tile(s.books.length, "Read in range"),
+    tile(s.days.reduce((a, d) => a + d.syncs, 0), "Syncs in range"),
+    tile(Math.round(s.books.reduce((a, b) => a + (b.advanced || 0), 0)), "Progress made (points)"),
+  );
+}
+
+// One bar per local day in the range, zero-filled so gaps are visible.
+function renderActivity() {
+  const s = state.stats, tz = -new Date().getTimezoneOffset() * 60;
+  const byDate = {};
+  s.days.forEach(d => { byDate[d.date] = d; });
+  const bars = [];
+  const end = Math.floor((s.to + tz) / DAY);
+  for (let i = state.days - 1; i >= 0; i--) {
+    const date = new Date((end - i) * DAY * 1000).toISOString().slice(0, 10);
+    const d = byDate[date];
+    bars.push({ date, v: d ? d[state.metric] : 0, syncs: d ? d.syncs : 0, adv: d ? d.advanced : 0 });
+  }
+  const W = Math.max(300, $("activity").clientWidth || 900), H = 200, L = 34, B = 22, T = 8;
+  const max = Math.max(1, ...bars.map(b => b.v));
+  const bw = (W - L) / bars.length;
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": "Daily " + (state.metric === "advanced" ? "progress" : "syncs") });
+  [0, 0.5, 1].forEach(f => {
+    const y = T + (H - B - T) * (1 - f);
+    root.append(svg("line", { x1: L, x2: W, y1: y, y2: y, stroke: "var(--line)" }));
+    root.append(svg("text", { x: L - 6, y: y + 4, "text-anchor": "end" }, String(Math.round(max * f))));
+  });
+  bars.forEach((b, i) => {
+    const h = (H - B - T) * (b.v / max);
+    const r = svg("rect", { x: L + i * bw + 1, y: H - B - h, width: Math.max(1, bw - 2), height: h,
+      fill: "var(--accent)", rx: 2 });
+    r.append(svg("title", {}, `${b.date}: ${b.syncs} syncs, ${b.adv} points`));
+    root.append(r);
+  });
+  [0, Math.floor(bars.length / 2), bars.length - 1].forEach((i, k) => {
+    root.append(svg("text", { x: L + i * bw + bw / 2, y: H - 6,
+      "text-anchor": k === 0 ? "start" : k === 2 ? "end" : "middle" }, bars[i].date));
+  });
+  $("activity").replaceChildren(root);
+}
+
+function renderBooks() {
+  const inRange = {};
+  state.stats.books.forEach(b => { inRange[b.document] = b; });
+  const body = $("books").tBodies[0];
+  body.replaceChildren();
+  $("booksEmpty").hidden = state.docs.length > 0;
+  state.docs.forEach(d => {
+    const r = inRange[d.document];
+    const tr = el("tr", { tabindex: "0", "aria-label": "Open " + nameOf(d.document) });
+    const title = el("td", {}, el("div", { text: nameOf(d.document) }));
+    if (nameOf(d.document) !== d.document) title.append(el("div", { class: "id", text: d.document }));
+    const bar = el("div", { class: "bar" }, el("span"));
+    bar.firstChild.style.width = Math.min(100, (d.percentage || 0) * 100) + "%";
+    tr.append(title,
+      el("td", {}, bar, el("div", { class: "muted", text: pct(d.percentage) })),
+      el("td", { class: "hide-sm", text: d.device || "–" }),
+      el("td", { text: ago(d.timestamp), title: fmtTime(d.timestamp) }),
+      el("td", { class: "hide-sm", text: r ? `${r.syncs} syncs, +${r.advanced || 0}` : "–" }));
+    const open = () => openBook(d.document);
+    tr.addEventListener("click", open);
+    tr.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+    body.append(tr);
+  });
+}
+
+async function openBook(id) {
+  state.open = id;
+  const to = Math.floor(Date.now() / 1000), from = to - state.days * DAY;
+  $("detail").hidden = false;
+  $("detailTitle").textContent = nameOf(id);
+  try {
+    const h = await api("/syncs/history/" + encodeURIComponent(id), { from, to, limit: 1000 });
+    renderTimeline(h.history);
+    const body = $("entries").tBodies[0];
+    body.replaceChildren();
+    h.history.slice().reverse().slice(0, 200).forEach(e => {
+      body.append(el("tr", {},
+        el("td", { text: fmtTime(e.timestamp) }), el("td", { text: pct(e.percentage) }),
+        el("td", { text: e.progress == null ? "–" : String(e.progress) }),
+        el("td", { text: e.device || "–" })));
+    });
+    $("detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (e) { handleError(e); }
+}
+
+// The x axis fits the book's own sync span, not the whole range, so a book read
+// over a few days is not squeezed against one edge.
+function renderTimeline(entries) {
+  const W = Math.max(300, $("timeline").clientWidth || 900), H = 180, L = 40, B = 22, T = 8;
+  state.entries = entries;
+  let from = entries.length ? entries[0].timestamp : 0;
+  let to = entries.length ? entries[entries.length - 1].timestamp : 1;
+  if (to - from < DAY) { from -= DAY / 2; to += DAY / 2; }
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Reading position over time" });
+  [0, 0.5, 1].forEach(f => {
+    const y = T + (H - B - T) * (1 - f);
+    root.append(svg("line", { x1: L, x2: W, y1: y, y2: y, stroke: "var(--line)" }));
+    root.append(svg("text", { x: L - 6, y: y + 4, "text-anchor": "end" }, Math.round(f * 100) + "%"));
+  });
+  const x = t => L + (W - L) * ((t - from) / (to - from));
+  const y = p => T + (H - B - T) * (1 - Math.min(1, Math.max(0, p || 0)));
+  if (entries.length) {
+    const pts = entries.map(e => `${x(e.timestamp).toFixed(1)},${y(e.percentage).toFixed(1)}`);
+    root.append(svg("polyline", { points: pts.join(" "), fill: "none", stroke: "var(--accent)", "stroke-width": 2 }));
+    entries.forEach(e => {
+      const c = svg("circle", { cx: x(e.timestamp), cy: y(e.percentage), r: 3, fill: "var(--accent)" });
+      c.append(svg("title", {}, `${fmtTime(e.timestamp)}: ${pct(e.percentage)} on ${e.device || "?"}`));
+      root.append(c);
+    });
+  } else {
+    root.append(svg("text", { x: W / 2, y: H / 2, "text-anchor": "middle" }, "No syncs in this range"));
+  }
+  root.append(svg("text", { x: L, y: H - 6 }, new Date(from * 1000).toLocaleDateString()));
+  root.append(svg("text", { x: W, y: H - 6, "text-anchor": "end" }, new Date(to * 1000).toLocaleDateString()));
+  $("timeline").replaceChildren(root);
+}
+
+function handleError(e) {
+  if (e instanceof AuthError) { logout(); $("loginError").textContent = "Session rejected. Sign in again."; }
+  else { $("loginError").textContent = ""; alert(e.message); }
+}
+
+async function refresh() {
+  const to = Math.floor(Date.now() / 1000);
+  const tz = -new Date().getTimezoneOffset();
+  try {
+    const [docs, stats] = await Promise.all([
+      api("/syncs/documents"),
+      api("/syncs/stats", { from: to - state.days * DAY, to, tz_offset: tz }),
+    ]);
+    state.docs = docs.documents; state.stats = stats;
+    renderTiles(); renderActivity(); renderBooks();
+    if (state.open) openBook(state.open);
+  } catch (e) { handleError(e); }
+}
+
+function start() {
+  $("login").hidden = true; $("app").hidden = false;
+  $("who").textContent = state.user;
+  refresh();
+}
+
+function logout() {
+  state.user = state.key = null; state.open = null;
+  store("user", null); store("key", null);
+  $("detail").hidden = true;
+  showLogin();
+}
+
+// ---- wiring ----------------------------------------------------------------
+$("loginForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  $("loginError").textContent = "";
+  state.user = $("user").value.trim();
+  const pw = $("pass").value;
+  state.key = $("prehashed").checked ? pw : md5(pw);
+  try {
+    await api("/users/auth");
+    store("user", state.user); store("key", state.key);
+    $("pass").value = "";
+    start();
+  } catch (err) {
+    state.user = state.key = null;
+    $("loginError").textContent = err instanceof AuthError ? "Wrong username or password." : err.message;
+  }
+});
+$("logout").addEventListener("click", logout);
+$("range").addEventListener("change", e => { state.days = +e.target.value; refresh(); });
+document.querySelectorAll("[data-metric]").forEach(b => b.addEventListener("click", () => {
+  state.metric = b.dataset.metric;
+  document.querySelectorAll("[data-metric]").forEach(o => o.setAttribute("aria-pressed", String(o === b)));
+  renderActivity();
+}));
+$("closeDetail").addEventListener("click", () => { state.open = null; $("detail").hidden = true; });
+$("rename").addEventListener("click", () => {
+  const cur = labels()[state.open] || "";
+  const name = prompt("Name for this book (stored in this browser only). Leave empty to clear.", cur);
+  if (name === null) return;
+  setLabel(state.open, name.trim());
+  $("detailTitle").textContent = nameOf(state.open);
+  renderBooks();
+});
+
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (state.stats) renderActivity();
+    if (state.open && state.entries) renderTimeline(state.entries);
+  }, 150);
+});
+
+state.user = load("user"); state.key = load("key");
+if (state.user && state.key) start(); else showLogin();
+</script>
+</body>
+</html>

@@ -96,6 +96,17 @@ History only starts accumulating once this is deployed; earlier overwritten
 positions are not recoverable. A sync happens when KOReader pushes progress, so
 the stats show trends rather than an exact reading clock.
 
+Web interface
+-------------
+
+The server also serves a small web page at `/web/` (the root redirects there).
+Sign in with your sync username and password. The page computes the same MD5
+key KOReader sends, in your browser, and sends only that key. It shows your
+books, a daily activity chart, and a per-book position timeline. It is a single
+static file with no external dependencies. Book names are not synced, so books
+show their document id; use Rename to give one a label, which is stored in your
+browser only.
+
 Deleting an account
 ===================
 

@@ -342,9 +342,11 @@ function SyncsController:update_progress()
             d = device,
             i = device_id,
         })
+        -- Score by millisecond time so writes within one second keep their
+        -- order; equal scores would be ordered by the member's text.
         local fields = {
             self.request.headers['x-auth-key'],
-            timestamp,
+            string.format("%.3f", ngx.now()),
             member,
             doc,
             self.percentage_field, percentage,
