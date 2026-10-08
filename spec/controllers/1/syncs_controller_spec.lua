@@ -520,6 +520,8 @@ describe("SyncsController", function()
             local response = get_json(username, userkey, "/syncs/history/nothing")
             assert.are.same(200, response.status)
             assert.are.same({}, response.body.history)
+            -- an empty list must be a JSON array, not an object
+            assert.truthy(string.find(response.body_raw, '"history":[]', 1, true))
         end)
 
         it("filters by range and limit", function()
@@ -575,6 +577,7 @@ describe("SyncsController", function()
             local response = get_json(username, userkey, "/syncs/documents")
             assert.are.same(200, response.status)
             assert.are.same(0, #response.body.documents)
+            assert.truthy(string.find(response.body_raw, '"documents":[]', 1, true))
         end)
 
         it("indexes books written before history existed", function()
@@ -622,6 +625,13 @@ describe("SyncsController", function()
             local response = get_json(username, userkey,
                 "/syncs/stats", { from = 0, to = day * 2, tz_offset = 120 })
             assert.are.same("1970-01-02", response.body.days[1].date)
+        end)
+
+        it("returns empty lists as arrays when nothing was read", function()
+            local response = get_json(username, userkey, "/syncs/stats")
+            assert.are.same(200, response.status)
+            assert.truthy(string.find(response.body_raw, '"days":[]', 1, true))
+            assert.truthy(string.find(response.body_raw, '"books":[]', 1, true))
         end)
 
         it("rejects a reversed or oversized range", function()

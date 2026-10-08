@@ -121,6 +121,14 @@ local function int_param(value)
     end
 end
 
+-- An empty Lua table encodes as a JSON object; a list must encode as [].
+local function as_list(t)
+    if #t == 0 then
+        return cjson.empty_array
+    end
+    return t
+end
+
 local function decode_entry(member)
     local ok, e = pcall(cjson.decode, member)
     if not ok or type(e) ~= "table" then
@@ -435,7 +443,7 @@ function SyncsController:list_documents()
         end)
     end
 
-    return 200, { documents = documents }
+    return 200, { documents = as_list(documents) }
 end
 
 -- Position timeline of one book, oldest first. `from` and `to` are unix
@@ -472,7 +480,7 @@ function SyncsController:get_history()
         end
     end
 
-    return 200, { document = doc, history = entries }
+    return 200, { document = doc, history = as_list(entries) }
 end
 
 -- Per-day activity over a range. A day's `advanced` is the sum of forward
@@ -567,7 +575,7 @@ function SyncsController:get_stats()
     end
     table.sort(books, function(a, b) return b.last_timestamp < a.last_timestamp end)
 
-    return 200, { from = from, to = to, days = out, books = books }
+    return 200, { from = from, to = to, days = as_list(out), books = as_list(books) }
 end
 
 function SyncsController:healthcheck()

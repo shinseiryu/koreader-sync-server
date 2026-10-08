@@ -211,6 +211,8 @@ function ago(t) {
   return Math.round(s / DAY) + " d ago";
 }
 
+const list = x => Array.isArray(x) ? x : [];
+
 class AuthError extends Error {}
 async function api(path, params) {
   const q = params ? "?" + new URLSearchParams(params) : "";
@@ -265,7 +267,7 @@ function renderActivity() {
   [0, 0.5, 1].forEach(f => {
     const y = T + (H - B - T) * (1 - f);
     root.append(svg("line", { x1: L, x2: W, y1: y, y2: y, stroke: "var(--line)" }));
-    root.append(svg("text", { x: L - 6, y: y + 4, "text-anchor": "end" }, String(Math.round(max * f))));
+    root.append(svg("text", { x: L - 6, y: y + 4, "text-anchor": "end" }, String(Number((max * f).toFixed(max < 4 ? 1 : 0)))));
   });
   bars.forEach((b, i) => {
     const h = (H - B - T) * (b.v / max);
@@ -313,10 +315,11 @@ async function openBook(id) {
   $("detailTitle").textContent = nameOf(id);
   try {
     const h = await api("/syncs/history/" + encodeURIComponent(id), { from, to, limit: 1000 });
-    renderTimeline(h.history);
+    const history = list(h.history);
+    renderTimeline(history);
     const body = $("entries").tBodies[0];
     body.replaceChildren();
-    h.history.slice().reverse().slice(0, 200).forEach(e => {
+    history.slice().reverse().slice(0, 200).forEach(e => {
       body.append(el("tr", {},
         el("td", { text: fmtTime(e.timestamp) }), el("td", { text: pct(e.percentage) }),
         el("td", { text: e.progress == null ? "–" : String(e.progress) }),
@@ -371,7 +374,8 @@ async function refresh() {
       api("/syncs/documents"),
       api("/syncs/stats", { from: to - state.days * DAY, to, tz_offset: tz }),
     ]);
-    state.docs = docs.documents; state.stats = stats;
+    state.docs = list(docs.documents);
+    state.stats = { ...stats, days: list(stats.days), books: list(stats.books) };
     renderTiles(); renderActivity(); renderBooks();
     if (state.open) openBook(state.open);
   } catch (e) { handleError(e); }
