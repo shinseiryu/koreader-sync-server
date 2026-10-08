@@ -1,8 +1,14 @@
 local Redis = require "db.redis"
+local cjson = require "cjson"
 
 local SyncsController = {
     user_key = "user:%s:key",
     doc_key = "user:%s:document:%s",
+    -- Everything below lives under the "user:<name>:" prefix, which is what
+    -- delete_user sweeps, so account deletion removes history too.
+    history_key = "user:%s:history:%s",
+    docs_key = "user:%s:documents",
+    indexed_key = "user:%s:documents_indexed",
     progress_field = "progress",
     percentage_field = "percentage",
     device_field = "device",
@@ -53,12 +59,42 @@ return 1
 ]]
 
 -- Check authentication at the write itself: a request that authorized before
--- deletion must not recreate a document afterward.
+-- deletion must not recreate a document afterward. The history entry and the
+-- document index are written in the same step so they never disagree with the
+-- latest-state hash.
+-- KEYS: user key, document hash, history zset, document index set
+-- ARGV: auth key, timestamp, history member, document id, hash fields...
 local update_progress_script = [[
 if redis.call("GET", KEYS[1]) ~= ARGV[1] then
     return 0
 end
-redis.call("HSET", KEYS[2], unpack(ARGV, 2))
+redis.call("HSET", KEYS[2], unpack(ARGV, 5))
+redis.call("ZADD", KEYS[3], ARGV[2], ARGV[3])
+redis.call("SADD", KEYS[4], ARGV[4])
+return 1
+]]
+
+-- Documents written before history existed have a hash but no index entry.
+-- Index them once per account, guarded by a flag so the keyspace scan does not
+-- run on every listing.
+-- KEYS: index set, flag. ARGV: document key prefix
+local index_documents_script = [[
+if redis.call("EXISTS", KEYS[2]) == 1 then
+    return 0
+end
+local cursor = "0"
+local prefix = ARGV[1]
+local plen = string.len(prefix)
+repeat
+    local result = redis.call("SCAN", cursor, "COUNT", 100)
+    cursor = result[1]
+    for _, key in ipairs(result[2]) do
+        if string.sub(key, 1, plen) == prefix then
+            redis.call("SADD", KEYS[1], string.sub(key, plen + 1))
+        end
+    end
+until cursor == "0"
+redis.call("SET", KEYS[2], "1")
 return 1
 ]]
 
@@ -71,6 +107,41 @@ end
 redis.call("SET", KEYS[1], ARGV[2])
 return 1
 ]]
+
+local day_seconds = 86400
+local max_stats_days = 366
+local default_history_limit = 100
+local max_history_limit = 1000
+
+-- Query-string integer, or nil when absent or malformed.
+local function int_param(value)
+    local n = tonumber(value)
+    if n and n == math.floor(n) then
+        return n
+    end
+end
+
+local function decode_entry(member)
+    local ok, e = pcall(cjson.decode, member)
+    if not ok or type(e) ~= "table" then
+        return nil
+    end
+    return {
+        timestamp = e.t,
+        percentage = e.p,
+        progress = e.g,
+        device = e.d,
+        device_id = e.i,
+    }
+end
+
+-- A hash field read back from redis; absent fields come back as ngx.null.
+local function field(value, convert)
+    if value == nil or value == null then
+        return nil
+    end
+    return convert and convert(value) or value
+end
 
 -- Whether a field is valid, i.e. not an empty string.
 local function is_valid_field(field)
@@ -264,8 +335,18 @@ function SyncsController:update_progress()
     local timestamp = os.time()
     if percentage and progress and device then
         local key = string.format(self.doc_key, username, doc)
+        local member = cjson.encode({
+            t = timestamp,
+            p = percentage,
+            g = progress,
+            d = device,
+            i = device_id,
+        })
         local fields = {
             self.request.headers['x-auth-key'],
+            timestamp,
+            member,
+            doc,
             self.percentage_field, percentage,
             self.progress_field, progress,
             self.device_field, device,
@@ -275,8 +356,11 @@ function SyncsController:update_progress()
             table.insert(fields, self.device_id_field)
             table.insert(fields, device_id)
         end
-        local updated, err = redis:eval(update_progress_script, 2,
-            string.format(self.user_key, username), key, unpack(fields))
+        local updated, err = redis:eval(update_progress_script, 4,
+            string.format(self.user_key, username), key,
+            string.format(self.history_key, username, doc),
+            string.format(self.docs_key, username),
+            unpack(fields))
         if updated == 0 then
             self:raise_error(self.error_unauthorized_user)
         elseif updated ~= 1 then
@@ -289,6 +373,199 @@ function SyncsController:update_progress()
     else
         self:raise_error(self.error_invalid_fields)
     end
+end
+
+-- Authenticate or raise 401; returns the username.
+function SyncsController:require_user()
+    local username = self:authorize()
+    if not username then
+        self:raise_error(self.error_unauthorized_user)
+    end
+    return username
+end
+
+function SyncsController:list_documents()
+    local username = self:require_user()
+    local redis = self:getRedis()
+
+    local _, err = redis:eval(index_documents_script, 2,
+        string.format(self.docs_key, username),
+        string.format(self.indexed_key, username),
+        string.format(self.doc_key, username, ""))
+    if err then
+        self:raise_error(self.error_internal)
+    end
+
+    local ids, err = redis:smembers(string.format(self.docs_key, username))
+    if err then
+        self:raise_error(self.error_internal)
+    end
+    table.sort(ids)
+
+    local documents = {}
+    if #ids > 0 then
+        redis:init_pipeline()
+        for _, id in ipairs(ids) do
+            redis:hmget(string.format(self.doc_key, username, id),
+                self.percentage_field, self.progress_field, self.device_field,
+                self.device_id_field, self.timestamp_field)
+        end
+        local results, err = redis:commit_pipeline()
+        if not results then
+            self:raise_error(self.error_internal)
+        end
+        for i, id in ipairs(ids) do
+            local r = results[i]
+            if type(r) == "table" and r[1] ~= null then
+                documents[#documents + 1] = {
+                    document = id,
+                    percentage = field(r[1], tonumber),
+                    progress = field(r[2]),
+                    device = field(r[3]),
+                    device_id = field(r[4]),
+                    timestamp = field(r[5], tonumber),
+                }
+            end
+        end
+        -- Most recently read first.
+        table.sort(documents, function(a, b)
+            return (a.timestamp or 0) > (b.timestamp or 0)
+        end)
+    end
+
+    return 200, { documents = documents }
+end
+
+-- Position timeline of one book, oldest first. `from` and `to` are unix
+-- seconds; `limit` keeps the newest entries when the range holds more.
+function SyncsController:get_history()
+    local username = self:require_user()
+
+    local doc = self.params.document
+    if not is_valid_key_field(doc) then
+        self:raise_error(self.error_document_field_missing)
+    end
+
+    local query = self.request.uri_params
+    local from = int_param(query.from)
+    local to = int_param(query.to)
+    local limit = int_param(query.limit) or default_history_limit
+    if limit < 1 or limit > max_history_limit then
+        self:raise_error(self.error_invalid_fields)
+    end
+
+    local redis = self:getRedis()
+    local members, err = redis:zrevrangebyscore(
+        string.format(self.history_key, username, doc),
+        to or "+inf", from or "-inf", "LIMIT", 0, limit)
+    if err then
+        self:raise_error(self.error_internal)
+    end
+
+    local entries = {}
+    for i = #members, 1, -1 do
+        local entry = decode_entry(members[i])
+        if entry then
+            entries[#entries + 1] = entry
+        end
+    end
+
+    return 200, { document = doc, history = entries }
+end
+
+-- Per-day activity over a range. A day's `advanced` is the sum of forward
+-- movement (in percentage points) between consecutive syncs of the same book;
+-- the last sync before the range is the baseline, so the first sync inside it
+-- is counted against real prior state. Syncs only fire when KOReader pushes, so
+-- these are trends, not a reading clock. Days are UTC unless `tz_offset`
+-- (minutes east of UTC) is given.
+function SyncsController:get_stats()
+    local username = self:require_user()
+
+    local query = self.request.uri_params
+    local now = os.time()
+    local to = int_param(query.to) or now
+    local from = int_param(query.from) or (to - 30 * day_seconds)
+    local tz = (int_param(query.tz_offset) or 0) * 60
+    if from > to or to - from > max_stats_days * day_seconds
+    or math.abs(tz) > day_seconds then
+        self:raise_error(self.error_invalid_fields)
+    end
+
+    local redis = self:getRedis()
+    local ids, err = redis:smembers(string.format(self.docs_key, username))
+    if err then
+        self:raise_error(self.error_internal)
+    end
+    table.sort(ids)
+
+    local days = {}
+    local books = {}
+    local function day_of(ts)
+        local start = math.floor((ts + tz) / day_seconds) * day_seconds - tz
+        local d = days[start]
+        if not d then
+            d = { date = os.date("!%Y-%m-%d", start + tz), syncs = 0, advanced = 0, docs = {} }
+            days[start] = d
+        end
+        return d
+    end
+
+    for _, id in ipairs(ids) do
+        local key = string.format(self.history_key, username, id)
+        local prev
+        local before = redis:zrevrangebyscore(key, "(" .. from, "-inf", "LIMIT", 0, 1)
+        if type(before) == "table" and before[1] then
+            prev = decode_entry(before[1])
+        end
+        local members, err = redis:zrangebyscore(key, from, to)
+        if err then
+            self:raise_error(self.error_internal)
+        end
+        local book = { document = id, syncs = 0, advanced = 0 }
+        for _, member in ipairs(members) do
+            local e = decode_entry(member)
+            if e and e.timestamp then
+                local d = day_of(e.timestamp)
+                d.syncs = d.syncs + 1
+                d.docs[id] = true
+                book.syncs = book.syncs + 1
+                book.last_timestamp = e.timestamp
+                book.percentage = e.percentage
+                if prev and e.percentage and prev.percentage
+                and e.percentage > prev.percentage then
+                    local gain = (e.percentage - prev.percentage) * 100
+                    d.advanced = d.advanced + gain
+                    book.advanced = book.advanced + gain
+                end
+                prev = e
+            end
+        end
+        if book.syncs > 0 then
+            books[#books + 1] = book
+        end
+    end
+
+    local out = {}
+    for start, d in pairs(days) do
+        local n = 0
+        for _ in pairs(d.docs) do n = n + 1 end
+        out[#out + 1] = {
+            date = d.date,
+            syncs = d.syncs,
+            books = n,
+            advanced = math.floor(d.advanced * 100 + 0.5) / 100,
+            start = start,
+        }
+    end
+    table.sort(out, function(a, b) return a.start < b.start end)
+    for _, d in ipairs(out) do d.start = nil end
+    for _, b in ipairs(books) do
+        b.advanced = math.floor(b.advanced * 100 + 0.5) / 100
+    end
+    table.sort(books, function(a, b) return b.last_timestamp < a.last_timestamp end)
+
+    return 200, { from = from, to = to, days = out, books = books }
 end
 
 function SyncsController:healthcheck()
@@ -322,6 +599,9 @@ for _, action in ipairs({
     "update_password",
     "get_progress",
     "update_progress",
+    "list_documents",
+    "get_history",
+    "get_stats",
     "healthcheck"
 }) do
     SyncsController[action] = releasing(SyncsController[action])

@@ -106,6 +106,35 @@ describe("SyncsController", function()
         return response
     end
 
+
+    local function get_json(username, userkey, path, uri_params)
+        return hit({
+            scheme = "https",
+            method = "GET",
+            path = path,
+            uri_params = uri_params,
+            headers = {
+                ["x-auth-user"] = username,
+                ["x-auth-key"] = userkey,
+            },
+        })
+    end
+
+    -- History entries carry server time, so tests that need a known timeline
+    -- seed redis directly, in the shape update_progress writes.
+    local function seed(username, doc, ts, percentage, progress, device)
+        local redis = require("redis")
+        local client = redis.connect("127.0.0.1", 6379)
+        client:select(2)
+        local cjson = require("cjson")
+        client:zadd(string.format("user:%s:history:%s", username, doc), ts,
+            cjson.encode({ t = ts, p = percentage, g = progress, d = device }))
+        client:sadd(string.format("user:%s:documents", username), doc)
+        client:hmset(string.format("user:%s:document:%s", username, doc),
+            "percentage", percentage, "progress", progress, "device", device,
+            "timestamp", ts)
+    end
+
     describe("#create", function()
         it("adds new user", function()
             local response = register("new-user", "passwd123")
@@ -458,6 +487,147 @@ describe("SyncsController", function()
                 local response = update(username, userkey, ok, 0.5, "10", "kpw")
                 assert.are.same(200, response.status)
             end
+        end)
+    end)
+    describe("#history", function()
+        local username, userkey = "reader", "passwd123"
+        before_each(function()
+            register(username, userkey)
+        end)
+
+        it("requires authentication", function()
+            for _, path in ipairs({ "/syncs/documents", "/syncs/history/abc", "/syncs/stats" }) do
+                local response = get_json(username, "wrong", path)
+                assert.are.same(401, response.status)
+                assert.are.same(2001, response.body.code)
+            end
+        end)
+
+        it("records every write, oldest first", function()
+            update(username, userkey, "book1", 0.1, "10", "kpw", "dev1")
+            update(username, userkey, "book1", 0.2, "20", "pb")
+            local response = get_json(username, userkey, "/syncs/history/book1")
+            assert.are.same(200, response.status)
+            assert.are.same("book1", response.body.document)
+            assert.are.same(2, #response.body.history)
+            assert.are.same(0.1, response.body.history[1].percentage)
+            assert.are.same("10", response.body.history[1].progress)
+            assert.are.same("dev1", response.body.history[1].device_id)
+            assert.are.same("pb", response.body.history[2].device)
+        end)
+
+        it("returns an empty timeline for an unknown book", function()
+            local response = get_json(username, userkey, "/syncs/history/nothing")
+            assert.are.same(200, response.status)
+            assert.are.same({}, response.body.history)
+        end)
+
+        it("filters by range and limit", function()
+            for i = 1, 5 do
+                seed(username, "book1", 1000 * i, i / 10, tostring(i), "kpw")
+            end
+            local response = get_json(username, userkey, "/syncs/history/book1", { from = 2000, to = 4000 })
+            assert.are.same(3, #response.body.history)
+            response = get_json(username, userkey, "/syncs/history/book1", { limit = 2 })
+            assert.are.same(2, #response.body.history)
+            -- the newest entries win, still oldest first
+            assert.are.same(4000, response.body.history[1].timestamp)
+            assert.are.same(5000, response.body.history[2].timestamp)
+            response = get_json(username, userkey, "/syncs/history/book1", { limit = 0 })
+            assert.are.same(403, response.status)
+        end)
+
+        it("does not show another user's history", function()
+            register("other", "passwd456")
+            update(username, userkey, "book1", 0.1, "10", "kpw")
+            local response = get_json("other", "passwd456", "/syncs/history/book1")
+            assert.are.same({}, response.body.history)
+        end)
+
+        it("is removed with the account", function()
+            update(username, userkey, "book1", 0.1, "10", "kpw")
+            delete_user(username, userkey)
+            local redis = require("redis")
+            local client = redis.connect("127.0.0.1", 6379)
+            client:select(2)
+            assert.are.same(0, #client:keys("*"))
+        end)
+    end)
+
+    describe("#documents", function()
+        local username, userkey = "reader", "passwd123"
+        before_each(function()
+            register(username, userkey)
+        end)
+
+        it("lists books with their latest position, newest first", function()
+            seed(username, "old", 1000, 0.5, "5", "kpw")
+            seed(username, "new", 2000, 0.9, "9", "pb")
+            local response = get_json(username, userkey, "/syncs/documents")
+            assert.are.same(200, response.status)
+            assert.are.same({ "new", "old" },
+                { response.body.documents[1].document, response.body.documents[2].document })
+            assert.are.same(0.9, response.body.documents[1].percentage)
+            assert.are.same("pb", response.body.documents[1].device)
+        end)
+
+        it("is empty for a new account", function()
+            local response = get_json(username, userkey, "/syncs/documents")
+            assert.are.same(200, response.status)
+            assert.are.same(0, #response.body.documents)
+        end)
+
+        it("indexes books written before history existed", function()
+            local redis = require("redis")
+            local client = redis.connect("127.0.0.1", 6379)
+            client:select(2)
+            client:hmset("user:reader:document:legacy",
+                "percentage", 0.4, "progress", "4", "device", "kpw", "timestamp", 123)
+            local response = get_json(username, userkey, "/syncs/documents")
+            assert.are.same(1, #response.body.documents)
+            assert.are.same("legacy", response.body.documents[1].document)
+            assert.are.same(123, response.body.documents[1].timestamp)
+        end)
+    end)
+
+    describe("#stats", function()
+        local username, userkey = "reader", "passwd123"
+        local day = 86400
+        before_each(function()
+            register(username, userkey)
+        end)
+
+        it("sums forward movement per day, using the prior sync as baseline", function()
+            -- 1970-01-02 and 1970-01-03, UTC
+            seed(username, "book1", day * 0 + 100, 0.10, "1", "kpw")
+            seed(username, "book1", day * 1 + 100, 0.30, "3", "kpw")
+            seed(username, "book1", day * 1 + 200, 0.35, "35", "kpw")
+            seed(username, "book1", day * 2 + 100, 0.20, "2", "kpw") -- went back
+            local response = get_json(username, userkey,
+                "/syncs/stats", { from = day, to = day * 3 })
+            assert.are.same(200, response.status)
+            assert.are.same(2, #response.body.days)
+            assert.are.same("1970-01-02", response.body.days[1].date)
+            assert.are.same(2, response.body.days[1].syncs)
+            assert.are.same(1, response.body.days[1].books)
+            assert.are.same(25, response.body.days[1].advanced)
+            assert.are.same(0, response.body.days[2].advanced)
+            assert.are.same(1, #response.body.books)
+            assert.are.same("book1", response.body.books[1].document)
+            assert.are.same(3, response.body.books[1].syncs)
+        end)
+
+        it("honours tz_offset when bucketing days", function()
+            seed(username, "book1", day - 3600, 0.1, "1", "kpw") -- 23:00 UTC day 1
+            local response = get_json(username, userkey,
+                "/syncs/stats", { from = 0, to = day * 2, tz_offset = 120 })
+            assert.are.same("1970-01-02", response.body.days[1].date)
+        end)
+
+        it("rejects a reversed or oversized range", function()
+            assert.are.same(403, get_json(username, userkey, "/syncs/stats", { from = 100, to = 50 }).status)
+            assert.are.same(403, get_json(username, userkey,
+                "/syncs/stats", { from = 0, to = day * 400 }).status)
         end)
     end)
 end)

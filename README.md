@@ -74,6 +74,28 @@ As you can see, the server responds over HTTPS using a self-signed certificate. 
       - 'traefik.http.services.kosync.loadbalancer.server.port=17200'
 ```
 
+Reading history
+===============
+
+Every progress write is also appended to a per-book history, so the server can
+show more than the latest position. These endpoints are read-only and use the
+same `x-auth-user` / `x-auth-key` headers as the rest of the API (and the same
+`Accept: application/vnd.koreader.v1+json` header).
+
+- `GET /syncs/documents` lists your books with their latest position, most
+  recently read first.
+- `GET /syncs/history/:document` returns that book's position timeline, oldest
+  first. Optional query parameters: `from` and `to` (unix seconds) and `limit`
+  (default 100, max 1000; the newest entries are kept).
+- `GET /syncs/stats` returns per-day and per-book activity: syncs, books
+  touched, and how far (in percentage points) reading moved forward. Optional
+  `from` and `to` (unix seconds, default the last 30 days, at most 366 days)
+  and `tz_offset` (minutes east of UTC, default 0) for day boundaries.
+
+History only starts accumulating once this is deployed; earlier overwritten
+positions are not recoverable. A sync happens when KOReader pushes progress, so
+the stats show trends rather than an exact reading clock.
+
 Deleting an account
 ===================
 
